@@ -71,7 +71,20 @@ select:focus,input:focus{outline:2px solid var(--sky);outline-offset:-1px}
 .kpi .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--mute);font-weight:750}
 .kpi .v{font-size:28px;font-weight:750;letter-spacing:-.6px;margin:6px 0 3px;font-variant-numeric:tabular-nums}
 .kpi .d{font-size:12px;font-weight:700}
+.kpi .fn{font-size:9.5px;color:var(--mute);margin-top:6px;font-weight:600;line-height:1.3;border-top:1px dotted var(--line);padding-top:5px}
 .up{color:var(--green)} .dn{color:var(--warn)} .flat{color:var(--mute)}
+
+/* occupancy block */
+.occ-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
+.occ-tile{border:1px solid var(--line);border-radius:9px;padding:13px 15px;background:#fafbfc}
+.occ-tile .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--mute);font-weight:750}
+.occ-tile .v{font-size:26px;font-weight:750;letter-spacing:-.5px;margin:5px 0 2px;font-variant-numeric:tabular-nums}
+.occ-tile .d{font-size:12px;font-weight:700}
+.occ-cap{font-size:11px;color:var(--mute);margin:2px 0 12px}
+.occ-empty{padding:18px;background:#f7f9fb;border:1px dashed var(--line);border-radius:8px;color:var(--mute);font-size:12.5px;line-height:1.5}
+.occ-bar{display:inline-block;height:6px;border-radius:4px;background:#e8edf2;width:70px;vertical-align:middle;overflow:hidden;margin-left:8px}
+.occ-bar span{display:block;height:100%;border-radius:4px}
+td.dpos{color:#33701c;font-weight:700} td.dneg{color:var(--warn);font-weight:700}
 
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
 .grid.full{grid-template-columns:1fr}
@@ -196,6 +209,15 @@ footer{margin-top:26px;padding-top:12px;border-top:1px solid var(--line);
 
 <div class="grid full">
   <div class="panel">
+    <h2>Occupancy — <span id="occRange"></span></h2>
+    <div id="occTiles" class="occ-tiles"></div>
+    <div id="occCap" class="occ-cap"></div>
+    <div id="occBody"></div>
+  </div>
+</div>
+
+<div class="grid full">
+  <div class="panel">
     <h2>Funnel detail</h2>
     <div class="scroll">
       <table id="tbl"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
@@ -262,11 +284,13 @@ function renderKPIs(){
   const rows=roiFiltered();
   const a=roiAgg(rows,idxSet(primaryPeriods())), b=roiAgg(rows,idxSet(comparePeriods()));
   const delta=(x,y)=>{if(!y)return['—','flat'];const p=(x-y)/y;return[(p>=0?'▲ ':'▼ ')+Math.abs(p*100).toFixed(1)+'%',p>=0?'up':'dn'];};
-  const card=(l,v,d,cls)=>`<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="d ${cls}">${d}</div></div>`;
+  const card=(l,v,d,cls,fn)=>`<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="d ${cls}">${d}</div>${fn?`<div class="fn">${fn}</div>`:''}</div>`;
+  const settling=primaryPeriods().some(p=>['2026-04','2026-05','2026-06'].includes(p));
   let h='';
   [['ld','Leads'],['sh','Tours'],['ap','Applications'],['ls','Leases']].forEach(([k,nm])=>{
     const [d,c]=delta(a[k],b[k]);
-    h+=card(nm,nf(a[k]),d+' vs '+nf(b[k]),c);
+    const fn=(k==='ls'&&settling)?'Apr–Jun 2026 leases still settling — final after Sept':'';
+    h+=card(nm,nf(a[k]),d+' vs '+nf(b[k]),c,fn);
   });
   document.getElementById('kpis').innerHTML=h;
 }
@@ -396,11 +420,50 @@ function drawEff(){
   document.getElementById('ebody').innerHTML=h;
 }
 
+const OCCPER=new Set(DATA.occ.map(o=>o[0]));
+function occMonths(periods){return periods.filter(p=>OCCPER.has(pIdx(p)));}
+function occAgg(periods){const pset=new Set(periods.map(pIdx));let u=0,v=0,found=false;for(const o of DATA.occ){if(pset.has(o[0])&&S.prop.has(o[1])){u+=o[2];v+=o[3];found=true;}}return found?{units:u,vacant:v,occ:1-v/u}:null;}
+function occByProp(periods){const pset=new Set(periods.map(pIdx));const m=new Map();for(const o of DATA.occ){if(pset.has(o[0])&&S.prop.has(o[1])){const e=m.get(o[1])||{u:0,v:0};e.u+=o[2];e.v+=o[3];m.set(o[1],e);}}return m;}
+
+function drawOcc(){
+  const P=primaryPeriods(),C=comparePeriods();
+  document.getElementById('occRange').textContent=fmtRange(P)+' vs '+fmtRange(C);
+  const tiles=document.getElementById('occTiles'),cap=document.getElementById('occCap'),body=document.getElementById('occBody');
+  const a=occAgg(P),b=occAgg(C);
+  if(!a){tiles.innerHTML='';cap.textContent='';body.innerHTML='<div class="occ-empty"><b>No occupancy data for this range.</b> Occupancy comes from the Yardi Box Score, pulled only for <b>Apr–Jun 2025</b> and <b>Apr–Jun 2026</b>. Choose a reporting range within those Q2 months to compare occupancy.</div>';return;}
+  const nA=occMonths(P).length||1,nB=occMonths(C).length||1;
+  const occup=a.units-a.vacant, avgU=a.units/nA, avgV=a.vacant/nA, avgOcc=occup/nA;
+  const tile=(l,v,d,cls)=>`<div class="occ-tile"><div class="l">${l}</div><div class="v">${v}</div><div class="d ${cls||''}">${d||''}</div></div>`;
+  let h='';
+  if(b){const dpp=(a.occ-b.occ)*100;h+=tile('Portfolio occupancy',(a.occ*100).toFixed(1)+'%',(dpp>=0?'▲ ':'▼ ')+Math.abs(dpp).toFixed(1)+' pts vs '+(b.occ*100).toFixed(1)+'%',dpp>=0?'up':'dn');}
+  else{h+=tile('Portfolio occupancy',(a.occ*100).toFixed(1)+'%','no comparison data','flat');}
+  h+=tile('Occupied units (avg/mo)',nf(avgOcc),nf(avgU)+' total units','flat');
+  if(b){const dv=avgV-b.vacant/nB;h+=tile('Vacant units (avg/mo)',nf(avgV),(dv<=0?'▼ ':'▲ ')+nf(Math.abs(dv))+' vs '+nf(b.vacant/nB),dv<=0?'up':'dn');}
+  else{h+=tile('Vacant units (avg/mo)',nf(avgV),'','flat');}
+  const above=[...occByProp(P).values()].filter(e=>1-e.v/e.u>=0.95).length;
+  h+=tile('Properties ≥95% occupied',above+' of '+occByProp(P).size,'','flat');
+  tiles.innerHTML=h;
+  const covered=occMonths(P);
+  cap.textContent=(covered.length!==P.length)?('Occupancy reflects available Box Score months only: '+covered.map(p=>fmtRange([p])).join(', ')+'.'):'';
+  // per-property table
+  const pa=occByProp(P),pb=occByProp(C);
+  const rows=[...pa.entries()].map(([k,e])=>{const occ=1-e.v/e.u;const cb=pb.get(k);const cocc=cb?1-cb.v/cb.u:null;return {k,name:DATA.props[k],units:e.u/nA,vac:e.v/nA,occ,cocc,d:cocc!==null?(occ-cocc)*100:null};}).sort((a,b)=>a.occ-b.occ);
+  let t='<div class="scroll" style="max-height:340px"><table><thead><tr><th>Property</th><th>Units</th><th>Occupancy</th><th></th><th>'+fmtRange(C).replace(/ – /,'–')+'</th><th>Δ pts</th><th>Vacant</th></tr></thead><tbody>';
+  for(const r of rows){
+    const col=r.occ>=0.95?'#5aad34':(r.occ>=0.9?'#72bcdf':'#b3341f');
+    const dcell=r.d===null?'<td>—</td>':`<td class="${r.d>=0?'dpos':'dneg'}">${r.d>=0?'+':''}${r.d.toFixed(1)}</td>`;
+    t+=`<tr><td>${r.name}</td><td>${nf(r.units)}</td><td>${(r.occ*100).toFixed(1)}%</td><td><span class="occ-bar"><span style="width:${(r.occ*100).toFixed(0)}%;background:${col}"></span></span></td><td>${r.cocc!==null?(r.cocc*100).toFixed(1)+'%':'—'}</td>${dcell}<td>${nf(r.vac)}</td></tr>`;
+  }
+  t+=`<tr class="tot"><td>PORTFOLIO</td><td>${nf(avgU)}</td><td>${(a.occ*100).toFixed(1)}%</td><td></td><td>${b?(b.occ*100).toFixed(1)+'%':'—'}</td>${b?`<td class="${(a.occ-b.occ)>=0?'dpos':'dneg'}">${(a.occ-b.occ)>=0?'+':''}${((a.occ-b.occ)*100).toFixed(1)}</td>`:'<td>—</td>'}<td>${nf(avgV)}</td></tr>`;
+  t+='</tbody></table></div>';
+  body.innerHTML=t;
+}
+
 function buildChips(){
   const mk=(id,names,set,key)=>{document.getElementById(id).innerHTML=names.map((n,i)=>`<span class="chip ${set.has(i)?'on':''}" data-k="${key}" data-i="${i}">${n}</span>`).join('');};
   mk('chipChan',DATA.chans,S.chan,'chan');mk('chipProp',DATA.props,S.prop,'prop');
 }
-function render(){renderKPIs();drawCalendar();drawTrend();drawCmp();drawTable();drawEff();}
+function render(){renderKPIs();drawCalendar();drawTrend();drawCmp();drawOcc();drawTable();drawEff();}
 
 document.addEventListener('click',e=>{
   const calm=e.target.closest('.cal-m');
